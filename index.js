@@ -32,9 +32,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: 'http://localhost:5173', // Allow requests from this origin
+        origin: '*', // Allow requests from all origins (for testing only)
         methods: ['GET', 'POST'],
-        credentials: true, // Allow credentials (if needed)
+        credentials: true,
     }
 });
 
@@ -61,12 +61,12 @@ app.post('/live', async (req, res) => {
         if (status === 'started') {
             const newStream = new LiveStream({ email, username, startTime, videoTitle, status, roomId });
             await newStream.save();
-            liveStreams.push(newStream); // Yangi efirni massivga qo'shish
+            liveStreams.push(newStream);
             io.emit('user-connected', newStream);
             res.status(201).json(newStream);
         } else if (status === 'stopped') {
             await LiveStream.findOneAndUpdate({ roomId }, { status, endTime });
-            liveStreams = liveStreams.filter(stream => stream.roomId !== roomId); // Efir to'xtatilganda massivdan olib tashlash
+            liveStreams = liveStreams.filter(stream => stream.roomId !== roomId);
             io.emit('user-disconnected', roomId);
             res.status(200).json({ message: 'Efir to‘xtatildi' });
         }
@@ -78,6 +78,10 @@ app.post('/live', async (req, res) => {
 // Socket.IO ulanishi
 io.on('connection', (socket) => {
     console.log('Yangi foydalanuvchi ulanishdi:', socket.id);
+
+    socket.on('connect_error', (err) => {
+        console.log(`Connection error: ${err.message}`);
+    });
 
     socket.on('start-stream', (streamData) => {
         liveStreams.push(streamData);
