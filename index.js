@@ -41,6 +41,8 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json());
 
+let liveStreams = []; // Jonli efirlar ma'lumotlarini saqlash uchun massiv
+
 // Jonli efirlarni olish
 app.get('/live', async (req, res) => {
     try {
@@ -59,10 +61,12 @@ app.post('/live', async (req, res) => {
         if (status === 'started') {
             const newStream = new LiveStream({ email, username, startTime, videoTitle, status, roomId });
             await newStream.save();
-            io.emit('user-connected', roomId);
+            liveStreams.push(newStream); // Yangi efirni massivga qo'shish
+            io.emit('user-connected', newStream);
             res.status(201).json(newStream);
         } else if (status === 'stopped') {
             await LiveStream.findOneAndUpdate({ roomId }, { status, endTime });
+            liveStreams = liveStreams.filter(stream => stream.roomId !== roomId); // Efir to'xtatilganda massivdan olib tashlash
             io.emit('user-disconnected', roomId);
             res.status(200).json({ message: 'Efir to‘xtatildi' });
         }
@@ -75,16 +79,16 @@ app.post('/live', async (req, res) => {
 io.on('connection', (socket) => {
     console.log('Yangi foydalanuvchi ulanishdi:', socket.id);
 
-    socket.on('join-room', (roomId, userId, userInfo) => {
-        socket.join(roomId);
-        console.log(`${userInfo.username} (${userId}) ${roomId} xonaga ulanishdi`);
+    socket.on('start-stream', (streamData) => {
+        liveStreams.push(streamData);
+        io.emit('live-streams', liveStreams);
+        socket.broadcast.emit('stream-started', streamData);
     });
 
-    socket.on('send-signal', (data) => {
-        socket.to(data.to).emit('receive-signal', {
-            from: socket.id,
-            signal: data.signal,
-        });
+    socket.on('stop-stream', (data) => {
+        liveStreams = liveStreams.filter(stream => stream.roomId !== data.roomId);
+        io.emit('live-streams', liveStreams);
+        socket.broadcast.emit('stream-stopped', data.roomId);
     });
 
     socket.on('disconnect', () => {
