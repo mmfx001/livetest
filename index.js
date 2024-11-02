@@ -3,6 +3,7 @@ const http = require('http');
 const mongoose = require('mongoose');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const { v4: uuidv4 } = require('uuid'); // To generate unique IDs
 
 // Mongoose modellarini yaratish
 const LiveStreamSchema = new mongoose.Schema({
@@ -11,8 +12,9 @@ const LiveStreamSchema = new mongoose.Schema({
     startTime: Date,
     videoTitle: String,
     status: String,
-    roomId: String,
+    roomId: { type: String, unique: true }, // Ensure roomId is unique
     endTime: Date,
+    chat: [{ username: String, message: String, timestamp: Date }] // Chat xabarlarini saqlash
 });
 
 const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
@@ -33,15 +35,13 @@ const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
         origin: '*', // Allow requests from all origins (for testing only)
-        methods: ['GET', 'POST'],
+        methods: ['GET', 'POST', 'PUT', 'DELETE'],
         credentials: true,
     }
 });
 
 app.use(cors());
 app.use(express.json());
-
-let liveStreams = []; // Jonli efirlar ma'lumotlarini saqlash uchun massiv
 
 // Jonli efirlarni olish
 app.get('/live', async (req, res) => {
@@ -53,25 +53,64 @@ app.get('/live', async (req, res) => {
     }
 });
 
-// Jonli efir yaratish yoki to'xtatish
+// Jonli efir yaratish
 app.post('/live', async (req, res) => {
-    const { email, username, startTime, videoTitle, status, roomId, endTime } = req.body;
+    const { email, username, videoTitle, status } = req.body;
 
     try {
+        const roomId = uuidv4(); // Generate unique room ID
+
         if (status === 'started') {
-            const newStream = new LiveStream({ email, username, startTime, videoTitle, status, roomId });
+            const newStream = new LiveStream({ email, username, startTime: new Date(), videoTitle, status, roomId });
             await newStream.save();
-            liveStreams.push(newStream);
             io.emit('user-connected', newStream);
             res.status(201).json(newStream);
-        } else if (status === 'stopped') {
-            await LiveStream.findOneAndUpdate({ roomId }, { status, endTime });
-            liveStreams = liveStreams.filter(stream => stream.roomId !== roomId);
-            io.emit('user-disconnected', roomId);
-            res.status(200).json({ message: 'Efir to‘xtatildi' });
+        } else {
+            res.status(400).json({ message: 'Invalid status' });
         }
     } catch (error) {
-        res.status(500).json({ message: 'Jonli efirni yaratishda yoki to‘xtatishda xatolik', error });
+        res.status(500).json({ message: 'Jonli efirni yaratishda xatolik', error });
+    }
+});
+
+// Jonli efirni tahrirlash (UPDATE)
+app.put('/live/:roomId', async (req, res) => {
+    const { roomId } = req.params;
+    const { videoTitle, status, endTime } = req.body;
+
+    try {
+        const updatedStream = await LiveStream.findOneAndUpdate(
+            { roomId },
+            { videoTitle, status, endTime },
+            { new: true }
+        );
+
+        if (!updatedStream) {
+            return res.status(404).json({ message: 'Efir topilmadi' });
+        }
+
+        io.emit('stream-updated', updatedStream);
+        res.status(200).json(updatedStream);
+    } catch (error) {
+        res.status(500).json({ message: 'Efirni tahrirlashda xatolik', error });
+    }
+});
+
+// Jonli efirni o'chirish (DELETE)
+app.delete('/live/:roomId', async (req, res) => {
+    const { roomId } = req.params;
+
+    try {
+        const deletedStream = await LiveStream.findOneAndDelete({ roomId });
+
+        if (!deletedStream) {
+            return res.status(404).json({ message: 'Efir topilmadi' });
+        }
+
+        io.emit('stream-deleted', roomId);
+        res.status(200).json({ message: 'Efir o\'chirildi' });
+    } catch (error) {
+        res.status(500).json({ message: 'Efirni o\'chirishda xatolik', error });
     }
 });
 
@@ -79,20 +118,22 @@ app.post('/live', async (req, res) => {
 io.on('connection', (socket) => {
     console.log('Yangi foydalanuvchi ulanishdi:', socket.id);
 
-    socket.on('connect_error', (err) => {
-        console.log(`Connection error: ${err.message}`);
-    });
+    socket.on('send-message', async ({ roomId, username, message }) => {
+        const chatMessage = { username, message, timestamp: new Date() };
 
-    socket.on('start-stream', (streamData) => {
-        liveStreams.push(streamData);
-        io.emit('live-streams', liveStreams);
-        socket.broadcast.emit('stream-started', streamData);
-    });
+        try {
+            // Efirga chat xabarini qo'shamiz
+            await LiveStream.findOneAndUpdate(
+                { roomId },
+                { $push: { chat: chatMessage } },
+                { new: true }
+            );
 
-    socket.on('stop-stream', (data) => {
-        liveStreams = liveStreams.filter(stream => stream.roomId !== data.roomId);
-        io.emit('live-streams', liveStreams);
-        socket.broadcast.emit('stream-stopped', data.roomId);
+            // Barcha foydalanuvchilarga xabarni yuboramiz
+            io.to(roomId).emit('new-message', chatMessage);
+        } catch (error) {
+            console.error('Chat xabarini saqlashda xatolik:', error);
+        }
     });
 
     socket.on('disconnect', () => {
