@@ -14,7 +14,7 @@ const LiveStreamSchema = new mongoose.Schema({
     status: String,
     roomId: { type: String, unique: true }, // Ensure roomId is unique
     endTime: Date,
-    chat: [{ username: String, message: String, timestamp: Date }] // Chat xabarlarini saqlash
+    chat: [{ _id: { type: String, default: uuidv4 }, username: String, message: String, timestamp: Date }] // Chat xabarlarini saqlash
 });
 
 const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
@@ -114,27 +114,100 @@ app.delete('/live/:roomId', async (req, res) => {
     }
 });
 
+// Jonli efirdagi chat xabarlarini olish
+app.get('/live/:roomId/chat', async (req, res) => {
+    const { roomId } = req.params;
+
+    try {
+        const liveStream = await LiveStream.findOne({ roomId });
+
+        if (!liveStream) {
+            return res.status(404).json({ message: 'Efir topilmadi' });
+        }
+
+        res.status(200).json(liveStream.chat);
+    } catch (error) {
+        res.status(500).json({ message: 'Chat xabarlarini olishda xatolik', error });
+    }
+});
+
+// Jonli efirga chat xabarini qo'shish
+app.post('/live/:roomId/chat', async (req, res) => {
+    const { roomId } = req.params;
+    const { username, message } = req.body;
+
+    const chatMessage = { username, message, timestamp: new Date() };
+
+    try {
+        const updatedStream = await LiveStream.findOneAndUpdate(
+            { roomId },
+            { $push: { chat: chatMessage } },
+            { new: true }
+        );
+
+        if (!updatedStream) {
+            return res.status(404).json({ message: 'Efir topilmadi' });
+        }
+
+        // Barcha foydalanuvchilarga xabarni yuboramiz
+        io.to(roomId).emit('new-message', chatMessage);
+        res.status(201).json(chatMessage);
+    } catch (error) {
+        res.status(500).json({ message: 'Chat xabarini qo\'shishda xatolik', error });
+    }
+});
+
+// Jonli efirda chat xabarini yangilash
+app.put('/live/:roomId/chat/:messageId', async (req, res) => {
+    const { roomId, messageId } = req.params;
+    const { message } = req.body;
+
+    try {
+        const updatedStream = await LiveStream.findOneAndUpdate(
+            { roomId, 'chat._id': messageId },
+            { $set: { 'chat.$.message': message } },
+            { new: true }
+        );
+
+        if (!updatedStream) {
+            return res.status(404).json({ message: 'Efir yoki xabar topilmadi' });
+        }
+
+        // Yangilangan xabarni barcha foydalanuvchilarga yuboramiz
+        const updatedMessage = updatedStream.chat.find(msg => msg._id.toString() === messageId);
+        io.to(roomId).emit('message-updated', updatedMessage);
+        res.status(200).json(updatedMessage);
+    } catch (error) {
+        res.status(500).json({ message: 'Chat xabarini yangilashda xatolik', error });
+    }
+});
+
+// Jonli efirda chat xabarini o'chirish
+app.delete('/live/:roomId/chat/:messageId', async (req, res) => {
+    const { roomId, messageId } = req.params;
+
+    try {
+        const updatedStream = await LiveStream.findOneAndUpdate(
+            { roomId },
+            { $pull: { chat: { _id: messageId } } },
+            { new: true }
+        );
+
+        if (!updatedStream) {
+            return res.status(404).json({ message: 'Efir topilmadi' });
+        }
+
+        // O'chirilgan xabarni barcha foydalanuvchilarga yuboramiz
+        io.to(roomId).emit('message-deleted', messageId);
+        res.status(200).json({ message: 'Xabar o\'chirildi', messageId });
+    } catch (error) {
+        res.status(500).json({ message: 'Chat xabarini o\'chirishda xatolik', error });
+    }
+});
+
 // Socket.IO ulanishi
 io.on('connection', (socket) => {
     console.log('Yangi foydalanuvchi ulanishdi:', socket.id);
-
-    socket.on('send-message', async ({ roomId, username, message }) => {
-        const chatMessage = { username, message, timestamp: new Date() };
-
-        try {
-            // Efirga chat xabarini qo'shamiz
-            await LiveStream.findOneAndUpdate(
-                { roomId },
-                { $push: { chat: chatMessage } },
-                { new: true }
-            );
-
-            // Barcha foydalanuvchilarga xabarni yuboramiz
-            io.to(roomId).emit('new-message', chatMessage);
-        } catch (error) {
-            console.error('Chat xabarini saqlashda xatolik:', error);
-        }
-    });
 
     socket.on('disconnect', () => {
         console.log('Foydalanuvchi uzildi:', socket.id);
