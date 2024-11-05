@@ -14,7 +14,7 @@ const LiveStreamSchema = new mongoose.Schema({
     status: String,
     roomId: { type: String, unique: true }, // Ensure roomId is unique
     endTime: Date,
-    chat: [{ _id: { type: String, default: uuidv4 }, username: String, message: String, timestamp: Date }] // Chat xabarlarini saqlash
+    chat: [{String}] // Chat xabarlarini saqlash
 });
 
 const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
